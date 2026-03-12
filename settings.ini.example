@@ -1,0 +1,31 @@
+# Fill out this file and rename it to `settings.ini`.
+
+# HTTPProxy = http://127.0.0.1:8081
+
+[Scan]
+Timeout = 5000
+
+[Configure]
+RestartAfterConfig = true
+
+[Network]
+NetworkMask  = 255.255.255.0
+Dns1         = 0.0.0.0
+Dns2         = 0.0.0.0
+DefaultRoute = 192.168.1.1
+
+[SIP]
+SipRegistrar     = 192.168.1.1
+SipRegistrarPort = 5060
+SipServer        = 192.168.1.1
+SipServerPort    = 5060
+SipGateway       = 192.168.1.1
+SipGatewayPort   = 5060
+SipDomain        = internal.localdomain
+
+Branding         = MyOrg
+
+[SNTP]
+SNTPServer      = 192.168.1.1
+TimezoneOffset  = 0
+DaylightSavings = true
