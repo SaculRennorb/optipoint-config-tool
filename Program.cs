@@ -1,7 +1,9 @@
+using System.Diagnostics;
+using System.IO;
 using System.Net;
-using System.Net.Sockets;
 using System.Security.Authentication;
 using System.Text.RegularExpressions;
+using System.Web;
 
 namespace ConfigTool;
 
@@ -65,12 +67,11 @@ static class Program {
 
 	static async Task<TargetInfo> ScanTarget(HttpClient client, string target)
 	{
-		var response = await client.GetWithBackup($"/home_page.html", new CancellationTokenSource(g_settings.Timeout).Token);
+		var (response, body) = await client.GetWithBackup($"/home_page.html", new CancellationTokenSource(g_settings.Timeout).Token);
 		response.EnsureSuccessStatusCode();
 
 		var result  = new TargetInfo();
-
-		var body = await response.Content.ReadAsStringAsync();
+		result.PhoneType = PhoneType._Unknown;
 
 		var match = new Regex(@"<TITLE>optiPoint(.*)Home Page</TITLE>", RegexOptions.IgnoreCase).Match(body);
 		if(match.Success) {
@@ -82,7 +83,7 @@ static class Program {
 					result.Model = Model.Optipoint410EconomyPlus;
 				else if(result.ModelString.Contains("eco", StringComparison.OrdinalIgnoreCase))
 					result.Model = Model.Optipoint410Economy;
-				else if(result.ModelString.Contains("std", StringComparison.OrdinalIgnoreCase))
+				else if(result.ModelString.Contains("sta", StringComparison.OrdinalIgnoreCase))
 					result.Model = Model.Optipoint410Standard;
 				else if(result.ModelString.Contains("adv", StringComparison.OrdinalIgnoreCase))
 					result.Model = Model.Optipoint410Advance;
@@ -92,7 +93,7 @@ static class Program {
 					result.Model = Model.Optipoint420Economy;
 				else if(result.ModelString.Contains("eco", StringComparison.OrdinalIgnoreCase))
 					result.Model = Model.Optipoint420Economy;
-				else if(result.ModelString.Contains("std", StringComparison.OrdinalIgnoreCase))
+				else if(result.ModelString.Contains("sta", StringComparison.OrdinalIgnoreCase))
 					result.Model = Model.Optipoint420Standard;
 				else if(result.ModelString.Contains("adv", StringComparison.OrdinalIgnoreCase))
 					result.Model = Model.Optipoint420Advance;
@@ -101,22 +102,36 @@ static class Program {
 			result.ApplicationKind = result.ModelString.EndsWith("s", StringComparison.OrdinalIgnoreCase) ? ApplicationKind.SIP : ApplicationKind.HFA;
 		}
 
-		var matchType = new Regex(@"<INPUT type=""hidden"" name=""PhoneType"" id=""PhoneType"" VALUE=""(\d+)"">", RegexOptions.IgnoreCase).Match(body);
-		if(matchType.Success) result.PhoneType = int.Parse(matchType.Groups[1].Value);
+		var matchType = phoneTypeRegex.Match(body);
+		if(matchType.Success) result.PhoneType = (PhoneType)int.Parse(matchType.Groups[1].Value);
 
 		return result;
 	}
 
-	struct TargetInfo
-	{
+	static readonly Regex phoneTypeRegex = new(@"<INPUT type=""hidden"" name=""PhoneType"" id=""PhoneType"" VALUE=""(\d+)"">", RegexOptions.IgnoreCase);
+
+	class TargetInfo {
 		public Model           Model;
 		public ApplicationKind ApplicationKind;
 		public string          ModelString;
-		public int             PhoneType;  // <INPUT type="hidden" name="PhoneType" id="PhoneType" VALUE="6">
+		public PhoneType       PhoneType;  // <INPUT type="hidden" name="PhoneType" id="PhoneType" VALUE="6">
 	}
 
-	enum Model
-	{
+	enum PhoneType {
+		_Unknown       = -1,
+		// These match the values from the phone, so we kinda have to go the -1 route for unknown.
+		Entry          = 0,
+		Economy        = 1,
+		EconomyPlus    = 7,
+		Standard       = 2,
+		Advance        = 3,
+		EconomySLK     = 4,
+		EconomyPlusSLK = 8,
+		StandardSLK    = 5,
+		AdvanceSLK     = 6,
+	}
+
+	enum Model {
 		_Unknown = default,
 		
 		Optipoint410Entry,
@@ -130,8 +145,7 @@ static class Program {
 		Optipoint420Advance,
 	}
 
-	enum ApplicationKind
-	{
+	enum ApplicationKind {
 		_Unknown = default,
 		HFA, SIP,
 	}
@@ -142,50 +156,37 @@ static class Program {
 
 		var info = await ScanTarget(client, target);
 
+		if(info.Model == Model._Unknown) {
+			Console.Error.WriteLine($"Unknown model '{info.ModelString}'");
+			Environment.Exit(1);
+		}
+
 		var terminalHostname = "PHONE"+terminalNumber;
 
 		var ftpServer = new FTPServer(IPAddress.Any, 21);
 		ftpServer.Start();
 
-		switch(info.Model) {
-			case Model.Optipoint420Advance:
-				if(info.ApplicationKind == ApplicationKind.HFA) {
-					Console.Error.Write("Logging in... ");
-					await ConfigureLoginAdmin(client, "/admin/index.html");
-					Console.Error.Write("Done. Backing up enb... ");
-					await ConfigureBackupEnb(client, info, ftpServer);
-					Console.Error.Write("Done. Uploading new application...");
-					await ConfigureUploadApplication(client, info, ftpServer);
-					Console.Error.WriteLine("Done.");
-					Console.WriteLine("Wait for the terminal to finish updating, then press enter to continue setting up the device.");
-					Console.ReadLine();
-					info.ApplicationKind = ApplicationKind.SIP;
-				}
-				if(info.ApplicationKind == ApplicationKind.SIP) {
-					Console.Error.Write("Logging in... ");
-					await ConfigureLoginAdmin(client, "/admin/index.html");
-					Console.Error.Write("Done. Backing up config... ");
-					await ConfigureBackupConfig(client, info, ftpServer);
-					Console.Error.Write("Done. Configuring network... ");
-					await ConfigureSetupNetwork(client, target, terminalHostname);
-					Console.Error.Write("Done. Configuring SIP... ");
-					await ConfigureSetupSip(client, info, terminalNumber, terminalName);
-					Console.Error.Write("Done. Configuring time and date...");
-					await ConfigureSetupSNTP(client);
-					Console.Error.Write("Done. ");
-					if(g_settings.RestartAfterConfig) {
-						Console.Error.Write("Requesting device restart...");
-						await ConfigureRestart(client, info);
-						Console.Error.Write("Submitted.");
-					}
-					Console.Error.WriteLine();
-				}
-				break;
+		if(info.ApplicationKind == ApplicationKind.HFA) {
+			Console.Error.Write("Logging in... "); await ConfigureLoginAdmin(client, "/admin/index.html"); Console.Error.WriteLine("Done. ");
+			Console.Error.Write("Backing up enb... "); await ConfigureBackupEnb(client, info, ftpServer); Console.Error.WriteLine("Done. ");
+			Console.Error.Write("Uploading new application..."); await ConfigureUploadApplication(client, info, ftpServer); Console.Error.WriteLine("Done. ");
 
-			default:
-				Console.Error.WriteLine($"Unknown model '{info.ModelString}'");
-				Environment.Exit(1);
-				return;
+			Console.WriteLine("Wait for the terminal to finish updating, then press enter to continue setting up the device.");
+			Console.ReadLine();
+					
+			info.ApplicationKind = ApplicationKind.SIP;
+		}
+
+		if(info.ApplicationKind == ApplicationKind.SIP) {
+			Console.Error.Write("Logging in... "); await ConfigureLoginAdmin(client, "/admin/index.html"); Console.Error.WriteLine("Done. ");
+			Console.Error.Write("Backing up config... "); await ConfigureBackupConfig(client, info, ftpServer); Console.Error.WriteLine("Done. ");
+			Console.Error.Write("Configuring network... "); await ConfigureSetupNetwork(client, target, terminalHostname); Console.Error.WriteLine("Done. ");
+			Console.Error.Write("Configuring SIP... "); await ConfigureSetupSip(client, info, terminalNumber, terminalName); Console.Error.WriteLine("Done. ");
+			Console.Error.Write("Configuring time and date... "); await ConfigureSetupSNTP(client); Console.Error.WriteLine("Done. ");
+			Console.Error.Write("Configuring function keys... "); await ConfigureSetupFunctionKeys(client, info); Console.Error.WriteLine("Done. ");
+			if(g_settings.RestartAfterConfig) {
+				Console.Error.Write("Requesting device restart... "); await ConfigureRestart(client, info); Console.Error.WriteLine("Submitted. ");
+			}
 		}
 	}
 
@@ -198,7 +199,7 @@ static class Program {
 		]);
 
 		var response = await client.PostWithBackup("/local_admin_login.html/LocalAdminLogin", content);
-		response.EnsureSuccessStatusCode();
+		response.ValidateNoErrors();
 	}
 
 	static async Task ConfigureBackupConfig(HttpClient client, TargetInfo info, FTPServer ftpServer)
@@ -236,7 +237,7 @@ static class Program {
 
 		var acceptTask = ftpServer.Accept();
 
-		var responseTask = (info.Model, info.ApplicationKind) switch {
+		var triggerTask = (info.Model, info.ApplicationKind) switch {
 			(Model.Optipoint420Advance, ApplicationKind.HFA) => throw new NotImplementedException(),
 			(Model.Optipoint420Advance, ApplicationKind.SIP) or
 			(_, ApplicationKind.SIP) =>
@@ -244,11 +245,9 @@ static class Program {
 			_ => throw new NotImplementedException(),
 		};
 
-		var con = await acceptTask;
-		await con.StoreFileOnAllPaths("file_transfer/backup");
-
-		var response = await responseTask;
-		await ValidateNoErrors(response);
+		var transferTask = acceptTask.ContinueWith(t => t.Result.StoreFileOnAllPaths("file_transfer/backup"), continuationOptions: TaskContinuationOptions.NotOnFaulted).Unwrap();
+		var responseTask = triggerTask.ContinueWith(t => t.Result.ValidateNoErrors(), continuationOptions: TaskContinuationOptions.NotOnFaulted);
+		Task.WaitAll(transferTask, responseTask);
 	}
 
 	static async Task ConfigureBackupEnb(HttpClient client, TargetInfo info, FTPServer ftpServer)
@@ -282,7 +281,7 @@ static class Program {
 
 		var acceptTask = ftpServer.Accept();
 
-		var responseTask = (info.Model, info.ApplicationKind) switch {
+		var triggerTask = (info.Model, info.ApplicationKind) switch {
 			(Model.Optipoint420Advance, ApplicationKind.SIP) => throw new NotImplementedException(), // TODO
 			(Model.Optipoint420Advance, ApplicationKind.HFA) or
 			(_, ApplicationKind.HFA) =>
@@ -290,11 +289,9 @@ static class Program {
 			_ => throw new NotImplementedException(),
 		};
 
-		var con = await acceptTask;
-		await con.StoreFileOnAllPaths("file_transfer/backup");
-
-		var response = await responseTask;
-		await ValidateNoErrors(response);
+		var transferTask = acceptTask.ContinueWith(t => t.Result.StoreFileOnAllPaths("file_transfer/backup"), continuationOptions: TaskContinuationOptions.NotOnFaulted).Unwrap();
+		var responseTask = triggerTask.ContinueWith(t => t.Result.ValidateNoErrors(), continuationOptions: TaskContinuationOptions.NotOnFaulted);
+		Task.WaitAll(transferTask, responseTask);
 	}
 
 	static async Task ConfigureUploadApplication(HttpClient client, TargetInfo info, FTPServer ftpServer)
@@ -337,7 +334,7 @@ static class Program {
 
 		var acceptTask = ftpServer.Accept();
 
-		var responseTask = (info.Model, info.ApplicationKind) switch {
+		var triggerTask = (info.Model, info.ApplicationKind) switch {
 			(Model.Optipoint420Advance, ApplicationKind.SIP) => throw new NotImplementedException(), // TODO
 			(Model.Optipoint420Advance, ApplicationKind.HFA) or
 			(_, ApplicationKind.HFA) =>
@@ -345,22 +342,25 @@ static class Program {
 			_ => throw new NotImplementedException(),
 		};
 
-		var con = await acceptTask;
-		for(int i = 0; ; i++) {
-			try {
-				await con.SendFileOnAllPaths(localFilePath);
-				break;
+		var transferTask = acceptTask.ContinueWith(async t => {
+			var con = t.Result;
+			for(int i = 0; ; i++) {
+				try {
+					await con.SendFileOnAllPaths(localFilePath);
+					break;
+				}
+				catch(IOException ex)  when (ex.Message.Contains("closed", StringComparison.OrdinalIgnoreCase) && i < 3) {
+					Console.Error.WriteLine($"Socket closed. The terminal might be restarting to free up memory. Will try to restart the connection (attempt {i + 1} / 3)...");
+					con.client.Close();
+					con = await ftpServer.Accept();
+					continue;
+				}
 			}
-			catch(IOException ex)  when (ex.Message.Contains("closed", StringComparison.OrdinalIgnoreCase) && i < 3) {
-				Console.Error.WriteLine($"Socket closed. The terminal might be restarting to free up memory. Will try to restart the connection (attempt {i + 1} / 3)...");
-				con.client.Close();
-				con = await ftpServer.Accept();
-				continue;
-			}
-		}
+		}, continuationOptions: TaskContinuationOptions.NotOnFaulted);
+		
+		var responseTask = triggerTask.ContinueWith(t => t.Result.ValidateNoErrors(), continuationOptions: TaskContinuationOptions.NotOnFaulted);
 
-		var response = await responseTask;
-		await ValidateNoErrors(response);
+		Task.WaitAll(transferTask, responseTask);
 	}
 
 	static string FormatModelFilenameInfix(Model model) => model switch {
@@ -415,13 +415,13 @@ static class Program {
 		]);
 
 		var response = await client.PostWithBackup("/admin/ip.html/IPAddrRout", content);
-		await ValidateNoErrors(response);
+		response.ValidateNoErrors();
 	}
 
 	static async Task ConfigureSetupSip(HttpClient client, TargetInfo info,  string terminalNumber, string terminalName)
 	{
 		var content = new FormUrlEncodedContent([
-			new("PhoneType", info.PhoneType.ToString()),
+			new("PhoneType", info.PhoneType.ToString("d")),
 			new("TermNum", terminalNumber),
 			new("TermName", terminalName),
 			new("DisplayId", $"{terminalNumber} - {terminalName}"),
@@ -454,7 +454,7 @@ static class Program {
 		]);
 
 		var response = await client.PostWithBackup("/admin/sip_environment.html/SIPEnvironment", content);
-		await ValidateNoErrors(response);
+		response.ValidateNoErrors();
 	}
 
 	static async Task ConfigureSetupSNTP(HttpClient client)
@@ -479,7 +479,156 @@ static class Program {
 		var content = new FormUrlEncodedContent(data);
 
 		var response = await client.PostWithBackup("/admin/time.html/Time", content);
-		await ValidateNoErrors(response);
+		response.ValidateNoErrors();
+	}
+
+	static async Task ConfigureSetupFunctionKeys(HttpClient client, TargetInfo info)
+	{
+		var (response, body) = await client.GetWithBackup("/admin/function_keys.html");
+		response.EnsureSuccessStatusCode();
+		
+		if(info.PhoneType == PhoneType._Unknown) {
+			var matchType = phoneTypeRegex.Match(body);
+			if(matchType.Success) info.PhoneType = (PhoneType)int.Parse(matchType.Groups[1].Value);
+		}
+		if(info.PhoneType == PhoneType._Unknown) {
+			Console.Error.WriteLine("Failed to determine phone type, cannot program keys.");
+			return;
+		}
+
+		
+		int keyCount = info.PhoneType switch { // might only be true for 410s
+			PhoneType.Entry      => 8,
+			PhoneType.AdvanceSLK => 8 + 4 + 6,
+			PhoneType.Advance    => 8 + 4 + 6 + 1,
+			_                    => 8 + 4,
+		};
+		const int MAX_KEY_COUNT = 19;
+
+		var currentKeyFunctions = new FunctionKeyCode[keyCount];
+
+		var currentFunctionRegex = new Regex(@"""Key(\d+)FnNo""\sVALUE=""(\d+)""", RegexOptions.IgnoreCase | RegexOptions.Singleline);
+		foreach(Match match in currentFunctionRegex.Matches(body)) {
+			var key = int.Parse(match.Groups[1].Value) - 1;
+			var currentFunction = (FunctionKeyCode)int.Parse(match.Groups[2].Value);
+
+			if(key >= keyCount) {
+				if(key >= MAX_KEY_COUNT && key < MAX_KEY_COUNT * 2) continue; // shift keys ignored for now.
+
+				if(currentFunction != FunctionKeyCode.ClearDefinition) {
+					Console.Error.WriteLine($"Key {key + 1} has a function assigned to it ({currentFunction}) even though this model should not even have that key.");
+					Environment.Exit(8);
+				}
+
+				continue; // the keys are always there, just hidden for smaller phones.
+			}
+
+
+			currentKeyFunctions[key] = currentFunction;
+		}
+
+		int leftRowCount = info.Model switch {
+			Model.Optipoint410Entry or 
+			Model.Optipoint410Economy or 
+			Model.Optipoint410EconomyPlus or 
+			Model.Optipoint410Standard or 
+			Model.Optipoint410Advance => 4,
+
+			Model.Optipoint420Economy or 
+			Model.Optipoint420EconomyPlus or 
+			Model.Optipoint420Standard or 
+			Model.Optipoint420Advance => 5,
+
+			_ => throw new UnreachableException(),
+		};
+
+		int rightRowCount = keyCount - leftRowCount;
+
+
+		var linearizedKeyConfigs = new KeyConfig[keyCount];
+		foreach(var config in g_settings.RawKeyConfigs) {
+			var rows = config.PhysColumn switch {
+				KeyColumn.Left => leftRowCount,
+				KeyColumn.Right => rightRowCount,
+				_ => throw new UnreachableException(),
+			};
+
+			var row = config.PhysRow.GetOffset(rows);
+			if(row >= rows || row < 0) {
+				Console.Error.WriteLine($"Cannot program key {config.PhysColumn} {config.PhysRow} because this phone doesn't have such a key.");
+				continue;
+			}
+
+			int key = row;
+			if(config.PhysColumn == KeyColumn.Right) key += leftRowCount;
+
+			var config2 = config;
+			config2.KeyNum = key + 1;
+
+			linearizedKeyConfigs[key] = config2;
+		}
+
+
+		var first = true;
+		foreach(var config in linearizedKeyConfigs) {
+			if(config.PhysColumn == KeyColumn._Unknown) continue;
+
+			var currentFunction = currentKeyFunctions[config.KeyNum - 1];
+			if(currentFunction == FunctionKeyCode.ClearDefinition && config.Function == FunctionKeyCode.ClearDefinition) continue;
+
+			if(first) {
+				Console.Error.WriteLine();
+				first = false;
+			}
+
+			Console.Error.Write($"Updating key {config.PhysColumn} #{config.PhysRow} -> {config.Function}... ");
+			await ConfigureKey(client, info, currentFunction, config);
+			Console.Error.WriteLine("Done.");
+		}
+
+
+		static async Task ConfigureKey(HttpClient client, TargetInfo info, FunctionKeyCode currentFunction, KeyConfig config)
+		{
+			var deleteLineKey = config.Function switch {
+				FunctionKeyCode.Line or FunctionKeyCode.DSS => config.Function != currentFunction,
+				_ => false,
+			};
+
+			string dialString;
+			Console.WriteLine(HttpUtility.UrlEncode(config.DisplayString, System.Text.Encoding.Latin1));
+			dialString = config.Function switch {
+				FunctionKeyCode.SelectedDialing => 
+					config.DialString
+					//NOTE(Rennorb): Taken from the js:
+					// Used to search through parameter strings and replace any '#' characters with an escape character (%23) as EmWeb does not allow '#' in a string.
+					.Replace("#", "%23")
+					// Also replace any + with its ASCII code 0x2B (&#43 in HTML)
+					.Replace("+", "%2B")
+					+
+					(info.PhoneType switch {
+						PhoneType.EconomySLK or
+						PhoneType.StandardSLK or
+						PhoneType.AdvanceSLK => $"^{HttpUtility.UrlEncode(config.DisplayString, System.Text.Encoding.Latin1)}",
+
+						_ => "",
+					})
+				,
+				_ => info.PhoneType switch {
+					PhoneType.EconomySLK or
+					PhoneType.StandardSLK or
+					PhoneType.AdvanceSLK => "%3Cno%20label%3E",
+
+					_ => "empty",
+				},
+			};
+		
+			//NOTE(Rennorb): Taken from the js:
+			//MR H39117 MKE Now we send the appropriate value in the array of current fnno
+			string args = $"?0,{config.KeyNum},{(config.Shifted ? '1' : '0')},{config.Function:D},{currentFunction:D},{deleteLineKey},{(config.AdminLocked? '1' : '0')},{dialString}";  // 1st '0' indicates 'Phone'
+
+			var response = await client.GetWithBackup(new Uri(client.BaseAddress!, "/admin/save_definitions_popup.html"+args, true));
+			response.ValidateNoErrors();
+		}
 	}
 
 	static async Task ConfigureRestart(HttpClient client, TargetInfo info)
@@ -492,7 +641,7 @@ static class Program {
 		]);
 
 		var response = await client.PostWithBackup("/admin/restart.html/Restart", content);
-		await ValidateNoErrors(response);
+		response.ValidateNoErrors();
 	}
 
 
@@ -519,22 +668,31 @@ static class Program {
 		return client;
 	}
 
-	static async Task<HttpResponseMessage> GetWithBackup(this HttpClient client, string path, CancellationToken ct = default)
+	static Task<(HttpResponseMessage, string)> GetWithBackup(this HttpClient client, string path, CancellationToken ct = default)
+	{
+		return GetWithBackup(client, new Uri(client.BaseAddress!, path), ct);
+	}
+
+	static async Task<(HttpResponseMessage, string)> GetWithBackup(this HttpClient client, Uri path, CancellationToken ct = default)
 	{
 		HttpResponseMessage response;
+		string body;
 		for(int backoff = 200; true; backoff *= 2) {
 			response = await client.GetAsync(path, ct);
-			if(response.StatusCode != HttpStatusCode.MethodNotAllowed) break;
+			body = await response.Content.ReadAsStringAsync(ct);
 
+			if(response.StatusCode != HttpStatusCode.MethodNotAllowed && !body.Contains("LocalAdminLogin", StringComparison.OrdinalIgnoreCase)) break;
 
 			if(backoff < 2000) {
-				Console.Error.WriteLine("Received 405 MethodNotAllowed, will retry after a short delay... ");
+				if(response.StatusCode != HttpStatusCode.MethodNotAllowed)
+					Console.Error.WriteLine("Received 405 MethodNotAllowed, will retry after a short delay... ");
+				else
+					Console.Error.WriteLine("Seem to have been redirected to the login page, will retry after a short delay... ");
 				await Task.Delay(backoff, ct);
 			}
 			else {
 				Console.Error.WriteLine("This doesn't seem to work, will reauthenticate... ");
 
-				var body = await response.Content.ReadAsStringAsync(ct);
 				var inputs = CollectInputValues(body);
 
 				await ConfigureLoginAdmin(client, inputs.FirstOrDefault(p => p.Key == "ReqURL").Value ?? "/admin/index.html");
@@ -542,24 +700,29 @@ static class Program {
 			}
 		}
 
-		return response;
+		return (response, body);
 	}
 
-	static async Task<HttpResponseMessage> PostWithBackup(this HttpClient client, string path, HttpContent content, CancellationToken ct = default)
+	static async Task<(HttpResponseMessage, string)> PostWithBackup(this HttpClient client, string path, HttpContent content, CancellationToken ct = default)
 	{
 		HttpResponseMessage response;
+		string body;
 		for(int backoff = 200; true; backoff *= 2) {
 			response = await client.PostAsync(path, content, ct);
-			if(response.StatusCode != HttpStatusCode.MethodNotAllowed)  break;
+			body = await response.Content.ReadAsStringAsync(ct);
+
+			if(response.StatusCode != HttpStatusCode.MethodNotAllowed && !body.Contains("LocalAdminLogin", StringComparison.OrdinalIgnoreCase)) break;
 			
 			if(backoff < 2000) {
-				Console.Error.WriteLine("Received 405 MethodNotAllowed, will retry after a short delay... ");
+				if(response.StatusCode != HttpStatusCode.MethodNotAllowed)
+					Console.Error.WriteLine("Received 405 MethodNotAllowed, will retry after a short delay... ");
+				else
+					Console.Error.WriteLine("Seem to have been redirected to the login page, will retry after a short delay... ");
 				await Task.Delay(backoff, ct);
 			}
 			else {
 				Console.Error.WriteLine("This doesn't seem to work, will reauthenticate... ");
 
-				var body = await response.Content.ReadAsStringAsync(ct);
 				var inputs = CollectInputValues(body);
 
 				await ConfigureLoginAdmin(client, inputs.FirstOrDefault(p => p.Key == "ReqURL").Value ?? "/admin/index.html");
@@ -567,30 +730,32 @@ static class Program {
 			}
 		}
 
-		return response;
+		return (response, body);
 	}
 
-	static async Task ValidateNoErrors(HttpResponseMessage response)
+	static async Task ValidateNoErrors(this HttpResponseMessage response, string? body = null)
 	{
-		response.EnsureSuccessStatusCode();
+		body ??= await response.Content.ReadAsStringAsync();
+		ValidateNoErrors((response, body));
+	}
+	static void ValidateNoErrors(this (HttpResponseMessage response, string body) tpl)
+	{
+		tpl.response.EnsureSuccessStatusCode();
 		
-		var body = await response.Content.ReadAsStringAsync();
-		
-		var errorRegex = new Regex(@"<script>\s*alert\(\s*""(.*?)""\s*\)", RegexOptions.IgnoreCase).Match(body);
+		var errorRegex = new Regex(@"<script>\s*alert\(\s*""(.*?)""\s*\)", RegexOptions.IgnoreCase).Match(tpl.body);
 		if(errorRegex.Success) {
 			Console.Error.Write("Transfer error: ");
 			Console.Error.WriteLine(errorRegex.Groups[1].Value.Replace("\\\"", "\""));
+
 			Environment.Exit(4);
 		}
 	}
 
-	
 	static async Task<List<KeyValuePair<string, string>>> CollectInputValuesForUrl(HttpClient client, string path, CancellationToken ct = default)
 	{
-		var response = await GetWithBackup(client, path, ct);
+		var (response, body) = await GetWithBackup(client, path, ct);
 		response.EnsureSuccessStatusCode();
 
-		var body = await response.Content.ReadAsStringAsync(ct);
 		return CollectInputValues(body);
 	}
 
@@ -699,13 +864,15 @@ struct Settings
 	public string TimezoneOffset;
 	public bool   DaylightSavings;
 
+	public List<KeyConfig> RawKeyConfigs;
 
 	public static Settings Load()
 	{
 		var settings = new Settings();
+		settings.RawKeyConfigs = new();
 
 		using var file = File.OpenRead("settings.ini");
-		using var reader = new StreamReader(file);
+		using var reader = new StreamReader(file, System.Text.Encoding.UTF8);
 		for(string? line; (line = reader.ReadLine()) != null; ) {
 			line = line.Trim();
 			if(string.IsNullOrEmpty(line) || line.StartsWith("[") || line.StartsWith("#")) continue;
@@ -718,7 +885,8 @@ struct Settings
 
 			var value = kv[1].Trim();
 
-			switch(kv[0].Trim()) {
+			var settingsKey = kv[0].Trim();
+			switch(settingsKey) {
 				case "HTTPProxy": settings.HTTPProxy = value; break;
 				case "RequestDelay": settings.RequestDelay = int.Parse(value); break;
 				case "RestartAfterConfig": settings.RestartAfterConfig = bool.Parse(value); break;
@@ -747,9 +915,105 @@ struct Settings
 				case "SNTPServer": settings.SNTPServer = value; break;
 				case "TimezoneOffset": settings.TimezoneOffset = value; break;
 				case "DaylightSavings": settings.DaylightSavings = bool.Parse(value); break;
+
+				default:
+					if(settingsKey.StartsWith("Key")) {
+						var keyConfig = new KeyConfig();
+						switch(settingsKey[3]) {
+							case 'R': keyConfig.PhysColumn = KeyColumn.Right; break;
+							case 'L': keyConfig.PhysColumn = KeyColumn.Left; break;
+							default:
+								Console.Error.WriteLine($"Failed to parse key definition: {settingsKey[3]} is neither R nor L.");
+								Environment.Exit(1); break;
+						}
+						var physRow = settingsKey[4..];
+						keyConfig.PhysRow = physRow.StartsWith('-') ? new Index(int.Parse(physRow[1..]), true) : new Index(int.Parse(physRow) -1);
+
+						var vSplits = value.Split(',', StringSplitOptions.TrimEntries);
+						if(!Enum.TryParse(vSplits[0], out keyConfig.Function)) {
+							Console.Error.WriteLine($"Failed to parse key definition: {vSplits[0]} is not a valid function.");
+							Environment.Exit(1);
+						}
+
+						switch(keyConfig.Function) {
+							case FunctionKeyCode.SelectedDialing:
+								if(vSplits.Length == 0) {
+									Console.Error.WriteLine($"Failed to parse key definition: {vSplits[0]} is not a valid function.");
+									Environment.Exit(1);
+								}
+								if(vSplits.Length >= 1) keyConfig.DialString = vSplits[1];
+								if(vSplits.Length >= 2) keyConfig.DisplayString = vSplits[2];
+								break;
+						}
+
+						settings.RawKeyConfigs.Add(keyConfig);
+					}
+					break;
 			}
 		}
 
 		return settings;
 	}
+}
+
+struct KeyConfig {
+	public KeyColumn       PhysColumn;
+	public Index           PhysRow;
+	public int             KeyNum;
+	public bool            Shifted;
+	public bool            AdminLocked;
+	public FunctionKeyCode Function;
+	public string          DialString;
+	public string          DisplayString;
+}
+
+enum KeyColumn { _Unknown = default, Left, Right }
+
+enum FunctionKeyCode {
+	ClearDefinition    =  0,
+	SelectedDialing    =  1,
+	AbbreviatedDialing =  2,
+	RepeatDialing      =  3,
+	MissedCalls        =  4,
+	VoiceMessages      =  5,
+	Forwarding         =  6,
+	Loudspeaker        =  7,
+	Mute               =  8,
+	RingerOff          =  9,
+	Hold               = 10,
+	Alternate          = 11,
+	BlindTransfer      = 12,
+	Join               = 13,
+	Deflect            = 14,
+	SetupMenu          = 15,
+	RoomEchoing        = 16,
+	RoomMuffled        = 17,
+	Shift              = 18,
+	Notebook           = 19,
+	Settings           = 20,
+	PhoneLock          = 21,
+	Conference         = 22,
+	LocalConference    = 23,
+	Headset            = 24,
+	DoNotDisturb       = 25,
+	Status             = 26,
+	Contacts           = 27,
+	InstantMsg         = 28,
+	GroupPickup        = 29,
+	RepertoryDial      = 30,
+	Line               = 31,
+	FeatureToggle      = 32,
+	CallPark           = 33,
+	CallPickup         = 34,
+	SwapScreens        = 35,
+	Cancel_Release     = 36,
+	Confirm            = 37,
+	DSS                = 38,
+	Consult_Transfer   = 39,
+	Callback           = 40,
+	CancelCallbacks    = 41,
+	StateKey           = 42,
+	Mobility           = 43,
+	CallRecording      = 44,
+	AICSZipTone        = 45,
 }
