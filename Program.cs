@@ -181,6 +181,7 @@ static class Program {
 			Console.Error.Write("Logging in... "); await ConfigureLoginAdmin(client, "/admin/index.html"); Console.Error.WriteLine("Done. ");
 			Console.Error.Write("Backing up config... "); await ConfigureBackupConfig(client, info, ftpServer); Console.Error.WriteLine("Done. ");
 			Console.Error.Write("Configuring network... "); await ConfigureSetupNetwork(client, target, terminalHostname); Console.Error.WriteLine("Done. ");
+			Console.Error.Write("Configuring language... "); await ConfigureSetupLanguage(client); Console.Error.WriteLine("Done. ");
 			Console.Error.Write("Configuring SIP... "); await ConfigureSetupSip(client, info, terminalNumber, terminalName); Console.Error.WriteLine("Done. ");
 			Console.Error.Write("Configuring time and date... "); await ConfigureSetupSNTP(client); Console.Error.WriteLine("Done. ");
 			Console.Error.Write("Configuring function keys... "); await ConfigureSetupFunctionKeys(client, info); Console.Error.WriteLine("Done. ");
@@ -482,6 +483,21 @@ static class Program {
 		response.ValidateNoErrors();
 	}
 
+	static async Task ConfigureSetupLanguage(HttpClient client)
+	{
+		var data = await CollectInputValuesForUrl(client, "/user/language.html");
+		data.AddOrReplaceInPostParamsList("Language1", g_settings.Language);
+		//data.AddOrReplaceInPostParamsList("Language2", "English UK");
+		//data.AddOrReplaceInPostParamsList("LanguagePack", "LP1");
+
+		data.AddOrReplaceInPostParamsList("Submit", "Submit");
+
+		var content = new FormUrlEncodedContent(data);
+
+		var response = await client.PostWithBackup("/user/language.html/Language", content);
+		response.ValidateNoErrors();
+	}
+
 	static async Task ConfigureSetupFunctionKeys(HttpClient client, TargetInfo info)
 	{
 		var (response, body) = await client.GetWithBackup("/admin/function_keys.html");
@@ -594,9 +610,7 @@ static class Program {
 				_ => false,
 			};
 
-			string dialString;
-			Console.WriteLine(HttpUtility.UrlEncode(config.DisplayString, System.Text.Encoding.Latin1));
-			dialString = config.Function switch {
+			var dialString = config.Function switch {
 				FunctionKeyCode.SelectedDialing => 
 					config.DialString
 					//NOTE(Rennorb): Taken from the js:
@@ -850,7 +864,9 @@ struct Settings
 	public string DefaultRoute;
 	public string Dns1;
 	public string Dns2;
-	
+
+	public string Language;
+
 	public string SipRegistrar;
 	public ushort SipRegistrarPort;
 	public string SipServer;
@@ -893,11 +909,13 @@ struct Settings
 
 				case "Timeout": settings.Timeout = int.Parse(value); break;
 				case "SelfIp": settings.SelfIp = value; break;
-				
+
 				case "NetworkMask": settings.NetworkMask = value; break;
 				case "DefaultRoute": settings.DefaultRoute = value; break;
 				case "Dns1": settings.Dns1 = value; break;
 				case "Dns2": settings.Dns2 = value; break;
+
+				case "Language": settings.Language = value; break;
 				
 				case "SipRegistrar": settings.SipRegistrar = value; break;
 				case "SipRegistrarPort": settings.SipRegistrarPort = ushort.Parse(value); break;

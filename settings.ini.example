@@ -15,6 +15,19 @@ Dns1         = 0.0.0.0
 Dns2         = 0.0.0.0
 DefaultRoute = 192.168.1.1
 
+[Language]
+# Available:
+# eGerman
+# eEnglish
+# eSpanish
+# eFrench
+# eItalian
+# eHungarian
+# eDutch
+# ePortuguese
+#   There are more in LP2 i didn't add logic for.
+Language = eEnglish
+
 [SIP]
 SipRegistrar     = 192.168.1.1
 SipRegistrarPort = 5060
