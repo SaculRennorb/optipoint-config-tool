@@ -55,8 +55,9 @@ KeyR1  = Notebook
 KeyR2  = Callback
 
 KeyR3  = SelectedDialing,111,Guy1
-KeyR4  = SelectedDialing,112,Guy2
+KeyR4  = DSS,112,location.internal,112,password,Guy2
 KeyR5  = SelectedDialing,113,Guy3
 
-
+# DSS keys require a line to be defined
+KeyR-2 = Line,<self>,location.internal,<self>,password,true,true,1,Main Line
 KeyR-1 = Cancel_Release

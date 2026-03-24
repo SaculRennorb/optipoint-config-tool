@@ -466,7 +466,7 @@ static class Program {
 			new("SIPSessTimerVal", "3600"),
 			new("RegTimerVal", "3600"),
 			new("SIPRealm", g_settings.SipDomain),
-			new("SIPId", ""),
+			new("SIPId", terminalNumber),
 			new("SIPPwd1", ""),
 			new("SIPPwd2", ""),
 			new("TransTimVal", "32000"),
@@ -586,8 +586,20 @@ static class Program {
 
 
 		var linearizedKeyConfigs = new KeyConfig[keyCount];
-		foreach(var config in g_settings.RawKeyConfigs) {
-			if(config.Function == FunctionKeyCode.SelectedDialing && config.DialString == terminalNumber) continue; // Don't program call to ourself
+		foreach(var config_ in g_settings.RawKeyConfigs) {
+			var config = config_;
+
+			switch (config.Function) {
+				case FunctionKeyCode.SelectedDialing:
+				case FunctionKeyCode.DSS:
+					if(config.DialString == terminalNumber) goto continue_outer; // Don't program call to ourself
+					break;
+
+				case FunctionKeyCode.Line:
+					if(config.DialString == "<self>") config.DialString = terminalNumber.ToString();
+					if(config.TargetUser == "<self>") config.TargetUser = terminalNumber.ToString();
+					break;
+			}
 
 			var rows = config.PhysColumn switch {
 				KeyColumn.Left => leftRowCount,
@@ -604,10 +616,11 @@ static class Program {
 			int key = row;
 			if(config.PhysColumn == KeyColumn.Right) key += leftRowCount;
 
-			var config2 = config;
-			config2.KeyNum = key + 1;
+			config.KeyNum = key + 1;
 
-			linearizedKeyConfigs[key] = config2;
+			linearizedKeyConfigs[key] = config;
+
+			continue_outer:;
 		}
 
 
@@ -636,22 +649,54 @@ static class Program {
 				_ => false,
 			};
 
-			var dialString = config.Function switch {
-				FunctionKeyCode.SelectedDialing => 
-					config.DialString
-					//NOTE(Rennorb): Taken from the js:
-					// Used to search through parameter strings and replace any '#' characters with an escape character (%23) as EmWeb does not allow '#' in a string.
-					.Replace("#", "%23")
-					// Also replace any + with its ASCII code 0x2B (&#43 in HTML)
-					.Replace("+", "%2B")
-					+
-					(info.PhoneType switch {
-						PhoneType.EconomySLK or
-						PhoneType.StandardSLK or
-						PhoneType.AdvanceSLK => $"^{HttpUtility.UrlEncode(config.DisplayString, System.Text.Encoding.Latin1)}",
+			static string FormatLabelDialExt(TargetInfo info, in KeyConfig config) => info.PhoneType switch {
+				PhoneType.EconomySLK or
+				PhoneType.StandardSLK or
+				PhoneType.AdvanceSLK => $"^{HttpUtility.UrlEncode(config.DisplayString, Encoding.Latin1)}",
 
-						_ => "",
-					})
+				_ => "",
+			};
+
+			static string UrlEncode(string dialString) => 
+				//NOTE(Rennorb): Taken from the js:
+				// dialString
+				// // Used to search through parameter strings and replace any '#' characters with an escape character (%23) as EmWeb does not allow '#' in a string.
+				// .Replace("#", "%23")
+				// // Also replace any + with its ASCII code 0x2B (&#43 in HTML)
+				// .Replace("+", "%2B");
+				HttpUtility.UrlEncode(dialString, Encoding.Latin1);
+
+			var dialString = config.Function switch {
+				FunctionKeyCode.SelectedDialing =>
+					UrlEncode(config.DialString) + FormatLabelDialExt(info, config)
+				,
+				FunctionKeyCode.Line => 
+					new StringBuilder(1024)
+					.Append(config.Flags.HasFlag(KeyConfigFlags.Line_Primary) ? '1' : '0').Append('^')
+					.Append(config.Flags.HasFlag(KeyConfigFlags.Line_Ring) ? '1' : '0').Append('^')
+					.Append(config.HuntRanking).Append('^')
+					.Append(UrlEncode(config.DialString)).Append('^')
+					.Append(UrlEncode(config.Realm)).Append('^')
+					.Append(UrlEncode(config.TargetUser)).Append('^')
+					.Append(UrlEncode(config.TargetPassword)).Append('^')
+					.Append(config.Flags.HasFlag(KeyConfigFlags.Line_Private) ? '1' : '0').Append('^')
+					.Append((int)config.HotLineType).Append('^')
+					.Append(UrlEncode(config.HotLineDialString)).Append('^')
+					.Append(config.Flags.HasFlag(KeyConfigFlags.Line_IntrusionAllowed) ? '1' : '0').Append('^')
+					.Append(UrlEncode(config.ShortDescription)).Append('^')
+					.Append(config.OverviewPosOnDSM).Append('^')
+					.Append(config.Flags.HasFlag(KeyConfigFlags.Line_ShowOnDSM) ? '1' : '0')
+					.Append(FormatLabelDialExt(info, config))
+					.ToString()
+				,
+				FunctionKeyCode.DSS => 
+					new StringBuilder(1024)
+					.Append(UrlEncode(config.DialString)).Append('^')
+					.Append(UrlEncode(config.Realm)).Append('^')
+					.Append(UrlEncode(config.TargetUser)).Append('^')
+					.Append(UrlEncode(config.TargetPassword))
+					.Append(FormatLabelDialExt(info, config))
+					.ToString()
 				,
 				_ => info.PhoneType switch {
 					PhoneType.EconomySLK or
@@ -981,12 +1026,45 @@ struct Settings
 
 						switch(keyConfig.Function) {
 							case FunctionKeyCode.SelectedDialing:
-								if(vSplits.Length == 0) {
-									Console.Error.WriteLine($"Failed to parse key definition: {vSplits[0]} is not a valid function.");
+								if(vSplits.Length < 1 + 1) {
+									Console.Error.WriteLine($"Failed to parse {vSplits[0]} definition; not enough arguments. Needs <dial string>[,<display text>] .");
 									Environment.Exit(1);
 								}
-								if(vSplits.Length >= 1) keyConfig.DialString = vSplits[1];
-								if(vSplits.Length >= 2) keyConfig.DisplayString = vSplits[2];
+								if(vSplits.Length >= 2) keyConfig.DialString = vSplits[1];
+								if(vSplits.Length >= 3) keyConfig.DisplayString = vSplits[2];
+								break;
+
+							case FunctionKeyCode.Line:
+								if(vSplits.Length < 1 + 7) { // Line,199,GA.internal,199,,true,true,1
+									Console.Error.WriteLine($"Failed to parse {vSplits[0]} definition; not enough arguments. Needs <aor>,<sip realm>,<username>,<password>,<primary?>,<ring?>,<hunt rank>[,<display text>] .");
+									Environment.Exit(1);
+								}
+								keyConfig.DialString        = vSplits[1];
+								keyConfig.Realm             = vSplits[2];
+								keyConfig.TargetUser        = vSplits[3];
+								keyConfig.TargetPassword    = vSplits[4];
+								if(bool.Parse(vSplits[5])) keyConfig.Flags |= KeyConfigFlags.Line_Primary;
+								if(bool.Parse(vSplits[6])) keyConfig.Flags |= KeyConfigFlags.Line_Ring;
+								keyConfig.HuntRanking       = byte.Parse(vSplits[7]);
+								//keyConfig.Flags            |= KeyConfigFlags.Line_Private;
+								keyConfig.HotLineType       = KeyConfigHotLineType.None;
+								keyConfig.HotLineDialString = "";
+								//keyConfig.Flags           |= KeyConfigFlags.Line_IntrusionAllowed;
+								keyConfig.OverviewPosOnDSM  = 0;
+								keyConfig.Flags            |= KeyConfigFlags.Line_ShowOnDSM;
+								if(vSplits.Length >= 9) keyConfig.DisplayString = vSplits[8];
+								break;
+
+							case FunctionKeyCode.DSS:
+								if(vSplits.Length < 1 + 4) {
+									Console.Error.WriteLine($"Failed to parse {vSplits[0]} definition; not enough arguments. Needs <dial string>,<sip realm>,<target username>,<target password>[,<display text>] .");
+									Environment.Exit(1);
+								}
+								keyConfig.DialString     = vSplits[1];
+								keyConfig.Realm          = vSplits[2];
+								keyConfig.TargetUser     = vSplits[3];
+								keyConfig.TargetPassword = vSplits[4];
+								if(vSplits.Length >= 6) keyConfig.DisplayString = vSplits[5];
 								break;
 						}
 
@@ -1001,15 +1079,35 @@ struct Settings
 }
 
 struct KeyConfig {
-	public KeyColumn       PhysColumn;
-	public Index           PhysRow;
-	public int             KeyNum;
-	public bool            Shifted;
-	public bool            AdminLocked;
-	public FunctionKeyCode Function;
-	public string          DialString;
-	public string          DisplayString;
+	public KeyColumn            PhysColumn;
+	public Index                PhysRow;
+	public int                  KeyNum;
+	public bool                 Shifted;
+	public bool                 AdminLocked;
+	public FunctionKeyCode      Function;
+	public string               DialString;
+	public string               DisplayString;
+	public string               Realm;
+	public string               TargetUser;
+	public string               TargetPassword;
+	public KeyConfigFlags       Flags;
+	public byte                 HuntRanking;
+	public byte                 OverviewPosOnDSM; // not parsed
+	public KeyConfigHotLineType HotLineType; // not parsed
+	public string               HotLineDialString; // not parsed
+	public string               ShortDescription; // not parsed
 }
+
+[Flags]
+enum KeyConfigFlags : byte {
+	Line_Primary          = 1 << 0,
+	Line_Ring             = 1 << 1,
+	Line_Private          = 1 << 2, // not parsed
+	Line_IntrusionAllowed = 1 << 3, // not parsed
+	Line_ShowOnDSM        = 1 << 4, // not parsed
+}
+
+enum KeyConfigHotLineType : byte { None = default, Warm, Hot }
 
 enum KeyColumn { _Unknown = default, Left, Right }
 
