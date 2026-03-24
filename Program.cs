@@ -101,6 +101,11 @@ static class Program {
 
 			result.ApplicationKind = result.ModelString.EndsWith("s", StringComparison.OrdinalIgnoreCase) ? ApplicationKind.SIP : ApplicationKind.HFA;
 		}
+		else if(body.Contains("Octophon F31 IP", StringComparison.OrdinalIgnoreCase)) {
+			result.ModelString = "Octophon F31 IP";
+			result.Model = Model.Optipoint410Standard;
+			result.ApplicationKind = ApplicationKind.HFA;
+		}
 
 		var matchType = phoneTypeRegex.Match(body);
 		if(matchType.Success) result.PhoneType = (PhoneType)int.Parse(matchType.Groups[1].Value);
