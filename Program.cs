@@ -179,10 +179,19 @@ static class Program {
 			Console.Error.Write("Backing up enb... "); await ConfigureBackupEnb(client, info, ftpServer); Console.Error.WriteLine("Done. ");
 			Console.Error.Write("Uploading new application..."); await ConfigureUploadApplication(client, info, ftpServer); Console.Error.WriteLine("Done. ");
 
-			Console.WriteLine("Wait for the terminal to finish updating, then press enter to continue setting up the device.");
-			Console.ReadLine();
-					
 			info.ApplicationKind = ApplicationKind.SIP;
+			Console.Error.Write("Wait for the terminal to finish updating...");
+
+			while(true) {
+				try {
+					Console.Error.Write(".");
+					await ScanTarget(client, target);
+					break;
+				}
+				catch { /**/ }
+			}
+
+			Console.Error.WriteLine(" Seems to be back.");
 		}
 
 		if(info.ApplicationKind == ApplicationKind.SIP) {
@@ -358,14 +367,21 @@ static class Program {
 					await con.SendFileOnAllPaths(localFilePath);
 					break;
 				}
-				catch(IOException ex)  when (ex.Message.Contains("closed", StringComparison.OrdinalIgnoreCase) && i < 3) {
-					Console.Error.WriteLine($"Socket closed. The terminal might be restarting to free up memory. Will try to restart the connection (attempt {i + 1} / 3)...");
+				catch(IOException ex) when (i < 1) {
+					Console.Error.WriteLine(ex.Message);
+					Console.Error.WriteLine($"Socket closed? The terminal might be restarting to free up memory. Will try to restart the connection...");
 					con.client.Close();
 					con = await ftpServer.Accept();
 					continue;
 				}
+				catch(IOException ex) { // @hack
+					Console.Error.WriteLine(ex.Message);
+					Console.Error.WriteLine($"Socket closed? Hopefully it worked now.");
+					con.client.Close();
+					break;
+				}
 			}
-		}, continuationOptions: TaskContinuationOptions.NotOnFaulted);
+		}, continuationOptions: TaskContinuationOptions.NotOnFaulted).Unwrap();
 		
 		var responseTask = triggerTask.ContinueWith(t => t.Result.ValidateNoErrors(), continuationOptions: TaskContinuationOptions.NotOnFaulted);
 
