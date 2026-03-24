@@ -1,7 +1,10 @@
 using System.Diagnostics;
+using System.Diagnostics.Contracts;
 using System.IO;
 using System.Net;
+using System.Net.Http.Headers;
 using System.Security.Authentication;
+using System.Text;
 using System.Text.RegularExpressions;
 using System.Web;
 
@@ -198,7 +201,7 @@ static class Program {
 
 	static async Task ConfigureLoginAdmin(HttpClient client, string requestUrl, string password = "123456")
 	{
-		var content = new FormUrlEncodedContent([
+		var content = new Latin1FormUrlEncodedContent([
 			new("ReqURL", requestUrl),
 			new("Pwd", password),
 			new("Login", "Login"),
@@ -214,7 +217,7 @@ static class Program {
 		var clientPrefix = client.BaseAddress!.DnsSafeHost;
 		var baseName = $"{DateTime.Now:yyMMddHHmmss}-{clientPrefix}-{modelInfix}";
 
-		var content = new FormUrlEncodedContent((info.Model, info.ApplicationKind) switch {
+		var content = new Latin1FormUrlEncodedContent((info.Model, info.ApplicationKind) switch {
 			(Model.Optipoint420Advance, ApplicationKind.HFA) => throw new NotImplementedException(),
 			(Model.Optipoint420Advance, ApplicationKind.SIP) or
 			(_, ApplicationKind.SIP) =>
@@ -264,7 +267,7 @@ static class Program {
 		var baseName = $"{now:yyMMddHHmmss}-{clientPrefix}-{modelInfix}";
 		var baseNameShort = $"{now:yyMMddHHmmss}-{clientPrefix[^7..]}";
 
-		var content = new FormUrlEncodedContent((info.Model, info.ApplicationKind) switch {
+		var content = new Latin1FormUrlEncodedContent((info.Model, info.ApplicationKind) switch {
 			(Model.Optipoint420Advance, ApplicationKind.SIP) => throw new NotImplementedException(), // TODO
 			(Model.Optipoint420Advance, ApplicationKind.HFA) or
 			(_, ApplicationKind.HFA) =>
@@ -317,7 +320,7 @@ static class Program {
 
 		Console.Error.WriteLine($"Selecting {filename}");
 
-		var content = new FormUrlEncodedContent((info.Model, info.ApplicationKind) switch {
+		var content = new Latin1FormUrlEncodedContent((info.Model, info.ApplicationKind) switch {
 			(Model.Optipoint420Advance, ApplicationKind.SIP) => throw new NotImplementedException(), // TODO
 			(Model.Optipoint420Advance, ApplicationKind.HFA) or
 			(_, ApplicationKind.HFA) =>
@@ -402,7 +405,7 @@ static class Program {
 
 	static async Task ConfigureSetupNetwork(HttpClient client, string selfAddress, string hostname)
 	{
-		var content = new FormUrlEncodedContent([
+		var content = new Latin1FormUrlEncodedContent([
 			new("IPAddr", selfAddress),
 			new("SMask", g_settings.NetworkMask),
 			new("DnsIpAddr", g_settings.Dns1),
@@ -426,7 +429,7 @@ static class Program {
 
 	static async Task ConfigureSetupSip(HttpClient client, TargetInfo info,  string terminalNumber, string terminalName)
 	{
-		var content = new FormUrlEncodedContent([
+		var content = new Latin1FormUrlEncodedContent([
 			new("PhoneType", info.PhoneType.ToString("d")),
 			new("TermNum", terminalNumber),
 			new("TermName", terminalName),
@@ -482,7 +485,7 @@ static class Program {
 
 		if(g_settings.DaylightSavings) data.AddOrReplaceInPostParamsList("Daylight", "on");
 		else                           data.RemoveFromPostParamsList("Daylight");
-		var content = new FormUrlEncodedContent(data);
+		var content = new Latin1FormUrlEncodedContent(data);
 
 		var response = await client.PostWithBackup("/admin/time.html/Time", content);
 		response.ValidateNoErrors();
@@ -497,7 +500,7 @@ static class Program {
 
 		data.AddOrReplaceInPostParamsList("Submit", "Submit");
 
-		var content = new FormUrlEncodedContent(data);
+		var content = new Latin1FormUrlEncodedContent(data);
 
 		var response = await client.PostWithBackup("/user/language.html/Language", content);
 		response.ValidateNoErrors();
@@ -652,7 +655,7 @@ static class Program {
 
 	static async Task ConfigureRestart(HttpClient client, TargetInfo info)
 	{
-		var content = new FormUrlEncodedContent([
+		var content = new Latin1FormUrlEncodedContent([
 			(info.Model, info.ApplicationKind) switch {
 				(Model.Optipoint420Advance, ApplicationKind.HFA) => new("Dummy", "Restart"),
 				_ => new("Submit", "Restart"),
@@ -1039,4 +1042,45 @@ enum FunctionKeyCode {
 	Mobility           = 43,
 	CallRecording      = 44,
 	AICSZipTone        = 45,
+}
+
+class Latin1FormUrlEncodedContent : ByteArrayContent
+{
+	public Latin1FormUrlEncodedContent(IEnumerable<KeyValuePair<string, string>> nameValueCollection) : base(GetContentByteArray(nameValueCollection))
+	{
+		Headers.ContentType = new MediaTypeHeaderValue("application/x-www-form-urlencoded");
+	}
+
+	private static byte[] GetContentByteArray(IEnumerable<KeyValuePair<string, string>> nameValueCollection)
+	{
+		ArgumentNullException.ThrowIfNull(nameValueCollection);
+		Contract.EndContractBlock();
+
+		// Encode and concatenate data
+		var  builder = new StringBuilder();
+		foreach (KeyValuePair<string, string> pair in nameValueCollection)
+		{
+			if (builder.Length > 0) 
+			{
+				// Not first, add a seperator
+				builder.Append('&');
+			}
+
+			builder.Append(Encode(pair.Key));
+			builder.Append('=');
+			builder.Append(Encode(pair.Value));
+		}
+
+		return Encoding.Latin1.GetBytes(builder.ToString());
+	}
+
+	private static string Encode(string data)
+	{
+		if (String.IsNullOrEmpty(data))
+		{
+			return String.Empty;
+		}
+		// Escape spaces as '+'.
+		return Uri.EscapeDataString(data).Replace("%20", "+"); 
+	}
 }
