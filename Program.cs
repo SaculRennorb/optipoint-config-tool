@@ -192,7 +192,7 @@ static class Program {
 			Console.Error.Write("Configuring language... "); await ConfigureSetupLanguage(client); Console.Error.WriteLine("Done. ");
 			Console.Error.Write("Configuring SIP... "); await ConfigureSetupSip(client, info, terminalNumber, terminalName); Console.Error.WriteLine("Done. ");
 			Console.Error.Write("Configuring time and date... "); await ConfigureSetupSNTP(client); Console.Error.WriteLine("Done. ");
-			Console.Error.Write("Configuring function keys... "); await ConfigureSetupFunctionKeys(client, info); Console.Error.WriteLine("Done. ");
+			Console.Error.Write("Configuring function keys... "); await ConfigureSetupFunctionKeys(client, info, terminalNumber); Console.Error.WriteLine("Done. ");
 			if(g_settings.RestartAfterConfig) {
 				Console.Error.Write("Requesting device restart... "); await ConfigureRestart(client, info); Console.Error.WriteLine("Submitted. ");
 			}
@@ -506,7 +506,7 @@ static class Program {
 		response.ValidateNoErrors();
 	}
 
-	static async Task ConfigureSetupFunctionKeys(HttpClient client, TargetInfo info)
+	static async Task ConfigureSetupFunctionKeys(HttpClient client, TargetInfo info, string terminalNumber)
 	{
 		var (response, body) = await client.GetWithBackup("/admin/function_keys.html");
 		response.EnsureSuccessStatusCode();
@@ -571,6 +571,8 @@ static class Program {
 
 		var linearizedKeyConfigs = new KeyConfig[keyCount];
 		foreach(var config in g_settings.RawKeyConfigs) {
+			if(config.Function == FunctionKeyCode.SelectedDialing && config.DialString == terminalNumber) continue; // Don't program call to ourself
+
 			var rows = config.PhysColumn switch {
 				KeyColumn.Left => leftRowCount,
 				KeyColumn.Right => rightRowCount,
