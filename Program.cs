@@ -644,7 +644,7 @@ static class Program {
 
 		static async Task ConfigureKey(HttpClient client, TargetInfo info, FunctionKeyCode currentFunction, KeyConfig config)
 		{
-			var deleteLineKey = config.Function switch {
+			var deleteLineKey = currentFunction switch {
 				FunctionKeyCode.Line or FunctionKeyCode.DSS => config.Function != currentFunction,
 				_ => false,
 			};
@@ -664,7 +664,9 @@ static class Program {
 				// .Replace("#", "%23")
 				// // Also replace any + with its ASCII code 0x2B (&#43 in HTML)
 				// .Replace("+", "%2B");
-				HttpUtility.UrlEncode(dialString, Encoding.Latin1);
+				HttpUtility.UrlEncode(dialString, Encoding.Latin1)
+				.Replace("+", "%20") // @hack
+			;
 
 			var dialString = config.Function switch {
 				FunctionKeyCode.SelectedDialing =>
@@ -683,7 +685,7 @@ static class Program {
 					.Append((int)config.HotLineType).Append('^')
 					.Append(UrlEncode(config.HotLineDialString)).Append('^')
 					.Append(config.Flags.HasFlag(KeyConfigFlags.Line_IntrusionAllowed) ? '1' : '0').Append('^')
-					.Append(UrlEncode(config.ShortDescription)).Append('^')
+					.Append(UrlEncode(string.IsNullOrEmpty(config.ShortDescription) ? " " : config.ShortDescription)).Append('^')
 					.Append(config.OverviewPosOnDSM).Append('^')
 					.Append(config.Flags.HasFlag(KeyConfigFlags.Line_ShowOnDSM) ? '1' : '0')
 					.Append(FormatLabelDialExt(info, config))
@@ -709,7 +711,8 @@ static class Program {
 		
 			//NOTE(Rennorb): Taken from the js:
 			//MR H39117 MKE Now we send the appropriate value in the array of current fnno
-			string args = $"?0,{config.KeyNum},{(config.Shifted ? '1' : '0')},{config.Function:D},{currentFunction:D},{deleteLineKey},{(config.AdminLocked? '1' : '0')},{dialString}";  // 1st '0' indicates 'Phone'
+			// 1st '0' indicates 'Phone'
+			string args = $"?0,{config.KeyNum},{(config.Shifted ? '1' : '0')},{config.Function:D},{currentFunction:D},{(deleteLineKey ? "true" : "false" /*lower case*/)},{(config.AdminLocked? '1' : '0')},{dialString}";
 
 			var response = await client.GetWithBackup(new Uri(client.BaseAddress!, "/admin/save_definitions_popup.html"+args, true));
 			response.ValidateNoErrors();
@@ -843,7 +846,7 @@ static class Program {
 		if(err != null) {
 			Console.Error.Write("Transfer error: ");
 			Console.Error.WriteLine(err);
-
+			
 			Environment.Exit(4);
 		}
 	}
