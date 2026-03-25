@@ -766,11 +766,17 @@ static class Program {
 			response = await client.GetAsync(path, ct);
 			body = await response.Content.ReadAsStringAsync(ct);
 
-			if(response.StatusCode != HttpStatusCode.MethodNotAllowed && !body.Contains("LocalAdminLogin", StringComparison.OrdinalIgnoreCase)) break;
+			var notRedirected = true;
+			if(response.StatusCode != HttpStatusCode.MethodNotAllowed
+				&& (notRedirected = !body.Contains("LocalAdminLogin", StringComparison.OrdinalIgnoreCase))
+				&& ExtractResponseError(body)?.Contains("terminal is busy", StringComparison.OrdinalIgnoreCase) != true
+			) break;
 
 			if(backoff < 2000) {
-				if(response.StatusCode != HttpStatusCode.MethodNotAllowed)
+				if(response.StatusCode == HttpStatusCode.MethodNotAllowed)
 					Console.Error.WriteLine("Received 405 MethodNotAllowed, will retry after a short delay... ");
+				else if(notRedirected)
+					Console.Error.WriteLine("Terminal busy, will retry after a short delay... ");
 				else
 					Console.Error.WriteLine("Seem to have been redirected to the login page, will retry after a short delay... ");
 				await Task.Delay(backoff, ct);
@@ -796,11 +802,17 @@ static class Program {
 			response = await client.PostAsync(path, content, ct);
 			body = await response.Content.ReadAsStringAsync(ct);
 
-			if(response.StatusCode != HttpStatusCode.MethodNotAllowed && !body.Contains("LocalAdminLogin", StringComparison.OrdinalIgnoreCase)) break;
+			var notRedirected = true;
+			if(response.StatusCode != HttpStatusCode.MethodNotAllowed
+				&& (notRedirected = !body.Contains("LocalAdminLogin", StringComparison.OrdinalIgnoreCase))
+				&& ExtractResponseError(body)?.Contains("terminal is busy", StringComparison.OrdinalIgnoreCase) != true
+			) break;
 			
 			if(backoff < 2000) {
-				if(response.StatusCode != HttpStatusCode.MethodNotAllowed)
+				if(response.StatusCode == HttpStatusCode.MethodNotAllowed)
 					Console.Error.WriteLine("Received 405 MethodNotAllowed, will retry after a short delay... ");
+				else if(notRedirected)
+					Console.Error.WriteLine("Terminal busy, will retry after a short delay... ");
 				else
 					Console.Error.WriteLine("Seem to have been redirected to the login page, will retry after a short delay... ");
 				await Task.Delay(backoff, ct);
@@ -827,13 +839,22 @@ static class Program {
 	{
 		tpl.response.EnsureSuccessStatusCode();
 		
-		var errorRegex = new Regex(@"<script>\s*alert\(\s*""(.*?)""\s*\)", RegexOptions.IgnoreCase).Match(tpl.body);
-		if(errorRegex.Success) {
+		var err = ExtractResponseError(tpl.body);
+		if(err != null) {
 			Console.Error.Write("Transfer error: ");
-			Console.Error.WriteLine(errorRegex.Groups[1].Value.Replace("\\\"", "\""));
+			Console.Error.WriteLine(err);
 
 			Environment.Exit(4);
 		}
+	}
+
+	static string? ExtractResponseError(string body)
+	{
+		var errorRegex = new Regex(@"<script>\s*alert\(\s*""(.*?)""\s*\)", RegexOptions.IgnoreCase).Match(body);
+		if(errorRegex.Success) {
+			return errorRegex.Groups[1].Value.Replace("\\\"", "\"");
+		}
+		return null;
 	}
 
 	static async Task<List<KeyValuePair<string, string>>> CollectInputValuesForUrl(HttpClient client, string path, CancellationToken ct = default)
