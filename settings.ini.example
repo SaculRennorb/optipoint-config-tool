@@ -14,6 +14,9 @@ NetworkMask  = 255.255.255.0
 Dns1         = 0.0.0.0
 Dns2         = 0.0.0.0
 DefaultRoute = 192.168.1.1
+Route1       = 192.168.1.0
+Mask1        = 255.255.255.0
+Gateway1     = 192.168.1.1
 
 [Language]
 # Available:

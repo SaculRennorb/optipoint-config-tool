@@ -430,11 +430,11 @@ static class Program {
 			new("DomainName", ""),
 			new("UseE164Hostname", "on"),
 			new("HostName", hostname),
-			new("Route1", "0.0.0.0"),
+			new("Route1", g_settings.Route1),
 			new("Route2", "0.0.0.0"),
-			new("Gway1", "0.0.0.0"),
+			new("Gway1", g_settings.Gateway1),
 			new("Gway2", "0.0.0.0"),
-			new("Mask1", "0.0.0.0"),
+			new("Mask1", g_settings.Mask1),
 			new("Mask2", "0.0.0.0"),
 			new("NATka", "0"),
 		]);
@@ -935,6 +935,9 @@ struct Settings
 	public string DefaultRoute;
 	public string Dns1;
 	public string Dns2;
+	public string Route1;
+	public string Mask1;
+	public string Gateway1;
 
 	public string Language;
 
@@ -985,6 +988,9 @@ struct Settings
 				case "DefaultRoute": settings.DefaultRoute = value; break;
 				case "Dns1": settings.Dns1 = value; break;
 				case "Dns2": settings.Dns2 = value; break;
+				case "Route1": settings.Route1     = value; break;
+				case "Mask1": settings.Mask1       = value; break;
+				case "Gateway1": settings.Gateway1 = value; break;
 
 				case "Language": settings.Language = value; break;
 				
