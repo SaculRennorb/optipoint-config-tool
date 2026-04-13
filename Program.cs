@@ -93,7 +93,7 @@ static class Program {
 			}
 			else if(result.ModelString.Contains("420")) {
 				if(result.ModelString.Contains("plus", StringComparison.OrdinalIgnoreCase))
-					result.Model = Model.Optipoint420Economy;
+					result.Model = Model.Optipoint420EconomyPlus;
 				else if(result.ModelString.Contains("eco", StringComparison.OrdinalIgnoreCase))
 					result.Model = Model.Optipoint420Economy;
 				else if(result.ModelString.Contains("sta", StringComparison.OrdinalIgnoreCase))
@@ -176,7 +176,9 @@ static class Program {
 
 		if(info.ApplicationKind == ApplicationKind.HFA) {
 			Console.Error.Write("Logging in... "); await ConfigureLoginAdmin(client, "/admin/index.html"); Console.Error.WriteLine("Done. ");
-			Console.Error.Write("Backing up enb... "); await ConfigureBackupEnb(client, info, ftpServer); Console.Error.WriteLine("Done. ");
+			if(info.Model != Model.Optipoint420EconomyPlus) {
+				Console.Error.Write("Backing up enb... "); await ConfigureBackupEnb(client, info, ftpServer); Console.Error.WriteLine("Done. ");
+			}
 			Console.Error.Write("Uploading new application..."); await ConfigureUploadApplication(client, info, ftpServer); Console.Error.WriteLine("Done. ");
 
 			info.ApplicationKind = ApplicationKind.SIP;
